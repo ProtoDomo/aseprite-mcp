@@ -1,0 +1,41 @@
+services:
+  aseprite-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    # Keep stdin open for stdio-based MCP transport
+    stdin_open: true
+    tty: true
+    
+    # Environment configuration
+    environment:
+      # Path to Aseprite binary inside container
+      # Mount your Aseprite installation as a volume to make it available
+      ASEPRITE_PATH: /usr/local/bin/aseprite
+    
+    # Volume mounts
+    volumes:
+      # Mount Aseprite binary (example paths - adjust to your setup)
+      # Option 1: Mount local Aseprite installation
+      # - /path/to/aseprite:/usr/local/bin/aseprite:ro
+      
+      # Option 2: Mount entire Aseprite directory
+      # - /opt/aseprite:/opt/aseprite:ro
+      # Then set ASEPRITE_PATH: /opt/aseprite/aseprite
+      
+      # Mount working directory for file operations
+      - ./workspace:/app/workspace
+    
+    # Resource limits (adjust as needed)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 1G
+    #     reservations:
+    #       cpus: '1'
+    #       memory: 512M
+    
+    # Restart policy
+    restart: unless-stopped

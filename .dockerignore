@@ -1,0 +1,56 @@
+# Dependencies - will be rebuilt in container
+node_modules/
+
+# Version control
+.git/
+.gitignore
+
+# Build artifacts - will be rebuilt in container
+dist/
+build/
+
+# Documentation
+*.md
+README.md
+CHANGELOG.md
+LICENSE
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Tests - not needed in production image
+**/*.test.ts
+**/*.spec.ts
+test/
+tests/
+__tests__/
+jest.config.js
+*.test.js
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# TypeScript
+tsconfig.json
+tsconfig.*.json
+*.tsbuildinfo
+
+# Package manager
+.npmrc
+npm-debug.log
+npm-error.log
+yarn-error.log
+pnpm-debug.log
+
+# Miscellaneous
+.editorconfig
+.prettierrc
+.eslintrc*
+.github/

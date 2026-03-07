@@ -3,7 +3,7 @@
 An [MCP](https://modelcontextprotocol.io/) server for [Aseprite](https://www.aseprite.org/) — create, edit, and export pixel art sprites, animations, and sprite sheets from any AI assistant.
 
 <p align="center">
-  <img src="assets/demo.gif" alt="Demo — cute rabbit drawn and animated with aseprite-mcp" width="256" />
+  <img src="assets/demo.gif" alt="Demo — pixel art knight walking animation created with aseprite-mcp" width="256" />
 </p>
 
 > *Drawn and animated entirely via aseprite-mcp tools — no manual pixel editing!*

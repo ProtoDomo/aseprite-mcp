@@ -190,6 +190,10 @@ local function build_state(reason)
 end
 
 local function write_state(includeSnapshot, reason, showAlert)
+  if app.isUIAvailable == false then
+    return false, "Aseprite UI is not available; skipping bridge state write"
+  end
+
   ensure_bridge_paths()
 
   local state = build_state(reason)
@@ -295,6 +299,10 @@ local function listen(eventName, callback)
 end
 
 function init(plugin)
+  if app.isUIAvailable == false then
+    return
+  end
+
   ensure_bridge_paths(plugin)
 
   local menuGroup = "codex_mcp_bridge_group"
@@ -353,6 +361,10 @@ function init(plugin)
 end
 
 function exit(plugin)
+  if app.isUIAvailable == false then
+    return
+  end
+
   for _, code in ipairs(listeners) do
     pcall(function()
       app.events:off(code)

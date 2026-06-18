@@ -329,9 +329,9 @@ describe("AsepriteMcpServer", () => {
   // -- Tool definitions --
 
   describe("toolDefinitions", () => {
-    it("returns exactly 48 tools", () => {
+    it("returns exactly 50 tools", () => {
       const tools = server.toolDefinitions();
-      expect(tools).toHaveLength(48);
+      expect(tools).toHaveLength(50);
     });
 
     it("each tool has name, description, and inputSchema", () => {
@@ -430,6 +430,8 @@ describe("AsepriteMcpServer", () => {
       expect(names).toContain("export_sprite_sheet");
       expect(names).toContain("export_frame");
       expect(names).toContain("export_layers");
+      expect(names).toContain("export_review_pack");
+      expect(names).toContain("compare_template_layers");
 
       // Slices
       expect(names).toContain("create_slice");
@@ -465,6 +467,22 @@ describe("AsepriteMcpServer", () => {
         "columns",
         "packed",
       ]);
+    });
+
+    it("compare_template_layers requires source and layer names", () => {
+      const tools = server.toolDefinitions();
+      const tool = tools.find((t) => t.name === "compare_template_layers")!;
+      const schema = tool.inputSchema as { required: string[] };
+      expect(schema.required).toContain("filePath");
+      expect(schema.required).toContain("baseLayerName");
+      expect(schema.required).toContain("finalLayerName");
+    });
+
+    it("export_review_pack can resolve active bridge sprite without required fields", () => {
+      const tools = server.toolDefinitions();
+      const tool = tools.find((t) => t.name === "export_review_pack")!;
+      const schema = tool.inputSchema as { required?: string[] };
+      expect(schema.required).toBeUndefined();
     });
 
     it("create_tag has aniDir enum", () => {

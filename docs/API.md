@@ -468,6 +468,53 @@ Export each layer as a separate image file.
 | `outputPattern` | string | ✅ | Output path with `{layer}` placeholder (e.g. `"output-{layer}.png"`) |
 | `frameNumber` | number | | Export this frame only (1-indexed) |
 
+#### `export_review_pack`
+Export a visual-review bundle for sprite work. The bundle includes a 1x sheet,
+an upscaled sheet, optional red-grid upscaled sheet, optional GIF, Aseprite JSON
+sheet metadata, a review-pack index JSON file, and optional template comparison
+JSON when `baseLayerName` and `finalLayerName` are supplied.
+
+If `filePath` is omitted, the tool resolves the active saved or snapshotted
+sprite from the Aseprite Codex Bridge.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filePath` | string | | Source sprite file. Defaults to active bridge sprite/snapshot. |
+| `outputDir` | string | | Output directory. Defaults to the sprite directory. |
+| `baseName` | string | | Output filename prefix. Defaults to `<sprite-name>-review`. |
+| `scale` | number | | Integer preview scale (default: `8`). |
+| `columns` | number | | Sheet columns. Defaults to tag count when it evenly divides frame count, otherwise `ceil(sqrt(frameCount))`. |
+| `layer` | string | | Export only this layer. |
+| `includeGif` | boolean | | Export upscaled GIF (default: `true`). |
+| `includeGrid` | boolean | | Export upscaled sheet with red frame guide grid (default: `true`). |
+| `baseLayerName` | string | | Template/base layer for optional comparison. |
+| `finalLayerName` | string | | Final/skin layer for optional comparison. |
+| `allowedExpansionPx` | number | | Allowed per-side silhouette expansion for comparison (default: `0`). |
+| `centerTolerancePx` | number | | Allowed bbox-center drift for comparison (default: `1`). |
+| `contactTolerancePx` | number | | Allowed bottom/contact drift for comparison (default: `0`). |
+
+**Returns:** output paths, sheet layout, sprite metadata, bridge source, and
+optional comparison summary.
+
+#### `compare_template_layers`
+Compare a template/base layer against a final/skin layer across every frame.
+This reports registration drift separately from allowed silhouette additions so
+template-guided skins can add readable ears, tails, shields, weapons, capes, or
+other identity features without forcing exact base silhouette matching.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filePath` | string | ✅ | Sprite file |
+| `baseLayerName` | string | ✅ | Template/base layer name |
+| `finalLayerName` | string | ✅ | Final/skin layer name |
+| `allowedExpansionPx` | number | | Allowed per-side silhouette expansion before reporting a frame as over allowance (default: `0`). |
+| `centerTolerancePx` | number | | Allowed bbox-center drift before reporting a frame as over tolerance (default: `1`). |
+| `contactTolerancePx` | number | | Allowed bottom/contact drift before reporting a frame as over tolerance (default: `0`). |
+
+**Returns:** per-frame bbox, expansion, center drift, bottom/contact drift,
+edge-touch flag, overlap pixels, template-only pixels, final-only pixels, and
+summary counts for frames over each tolerance.
+
 ---
 
 ## Slices

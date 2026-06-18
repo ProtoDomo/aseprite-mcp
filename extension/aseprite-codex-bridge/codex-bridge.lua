@@ -275,6 +275,13 @@ local function show_status_dialog()
     end
   })
   dialog:button({
+    id = "review",
+    text = "Prepare Review Pack",
+    onclick = function()
+      write_state(true, "status-dialog-review-pack", false)
+    end
+  })
+  dialog:button({
     id = "close",
     text = "Close",
     onclick = function()
@@ -335,6 +342,18 @@ function init(plugin)
     group = commandGroup,
     onclick = function()
       write_state(true, "manual-snapshot", true)
+    end,
+    onenabled = function()
+      return (app.sprite or app.activeSprite) ~= nil
+    end
+  })
+
+  plugin:newCommand({
+    id = "CodexMcpPrepareReviewPackContext",
+    title = "Prepare Review Pack Context",
+    group = commandGroup,
+    onclick = function()
+      write_state(true, "manual-review-pack", true)
     end,
     onenabled = function()
       return (app.sprite or app.activeSprite) ~= nil

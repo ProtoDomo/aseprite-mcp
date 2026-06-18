@@ -8,6 +8,7 @@ a shared bridge folder.
 
 - `Sprite > Codex MCP > Refresh Context`
 - `Sprite > Codex MCP > Save Active Snapshot`
+- `Sprite > Codex MCP > Prepare Review Pack Context`
 - `Sprite > Codex MCP > Show Bridge Status`
 - Automatic context refresh on Aseprite site changes and commands
 - A shared `state.json` file that the MCP server can read
@@ -29,9 +30,13 @@ different shared folder.
 - `get_active_sprite_info`
 - `save_active_sprite_copy`
 - `run_script_on_active_sprite`
+- `export_review_pack`
+- `compare_template_layers`
 
 These tools remove the need to repeatedly pass sprite paths when Codex should operate on
-the currently active Aseprite document.
+the currently active Aseprite document. Use `Prepare Review Pack Context` before asking
+Codex to audit template/skin work; it saves a fresh snapshot and context state that
+`export_review_pack` can resolve without path guessing.
 
 ## Package
 

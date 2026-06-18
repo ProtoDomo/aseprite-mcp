@@ -207,7 +207,7 @@ docker compose up
 ```bash
 npm run build       # Compile TypeScript
 npm run watch       # Recompile on changes
-npm test            # Run 76 source unit tests (vitest)
+npm test            # Run 78 source unit tests (vitest)
 npm run test:watch  # Watch mode
 npm run inspector   # MCP Inspector for interactive testing
 .\scripts\package-extension.ps1  # Package the optional Aseprite extension

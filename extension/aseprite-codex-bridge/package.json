@@ -1,0 +1,19 @@
+{
+  "name": "aseprite-codex-bridge",
+  "displayName": "Aseprite Codex Bridge",
+  "description": "Shares active Aseprite editor context with the Codex Aseprite MCP server.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Metafold Games"
+  },
+  "publisher": "metafold-games",
+  "license": "MIT",
+  "categories": ["Scripts"],
+  "contributes": {
+    "scripts": [
+      {
+        "path": "./codex-bridge.lua"
+      }
+    ]
+  }
+}

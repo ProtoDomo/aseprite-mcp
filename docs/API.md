@@ -498,6 +498,57 @@ Slices define named rectangular regions within a sprite (9-slice scaling, UI ext
 
 ---
 
+## Aseprite Codex Bridge
+
+These tools use the optional Aseprite Codex Bridge extension. The extension writes
+active editor context to a shared `state.json` file and can save an
+`active-sprite.aseprite` snapshot in the same bridge folder.
+
+Set `ASEPRITE_MCP_BRIDGE_DIR` for both Aseprite and the MCP server if you want
+to override the default `<system temp>/aseprite-mcp-bridge` folder.
+
+#### `get_bridge_status`
+Read the bridge status file if it exists.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+**Returns:** bridge directory, state path, snapshot path, active sprite file if available, and the raw bridge state.
+
+#### `get_active_sprite_context`
+Read the active sprite, active layer, active frame, selection, and snapshot context written by the extension.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+#### `get_active_sprite_info`
+Resolve the active saved sprite or snapshot from the bridge state, then return full `get_sprite_info` metadata for that file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+#### `save_active_sprite_copy`
+Save a copy of the active saved sprite or snapshot reported by the bridge.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `savePath` | string | | Destination path. Defaults to `active-sprite-copy.aseprite` in the bridge folder. |
+
+#### `run_script_on_active_sprite`
+Execute Lua with the active saved sprite or snapshot opened first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `script` | string | ✅ | Lua script code to execute |
+
+The script controls whether changes are saved. Use `app.activeSprite:saveCopyAs(...)`
+inside the script for generated outputs.
+
+---
+
 ## Utility
 
 #### `run_script`

@@ -8,7 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { writeFile, unlink } from "node:fs/promises";
+import { readFile, stat, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -31,6 +31,27 @@ interface ToolResult {
 }
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+
+interface BridgeState {
+  schemaVersion?: number;
+  generatedAt?: string;
+  reason?: string;
+  bridge?: {
+    dir?: string;
+    stateFile?: string;
+    snapshotFile?: string;
+  };
+  extension?: Record<string, unknown>;
+  aseprite?: Record<string, unknown>;
+  sprite?: {
+    exists?: boolean;
+    filePath?: string;
+    snapshotPath?: string;
+    [key: string]: unknown;
+  };
+  active?: Record<string, unknown>;
+  error?: string;
+}
 
 // Escape a string for safe embedding inside Lua double-quoted strings
 export function luaEscape(s: string): string {
@@ -304,6 +325,62 @@ end
       return `Color{ r=${c.r ?? 0}, g=${c.g ?? 0}, b=${c.b ?? 0}, a=${c.a ?? 255} }`;
     }
     return "Color{ r=0, g=0, b=0, a=255 }";
+  }
+
+  public bridgeDir(): string {
+    return process.env.ASEPRITE_MCP_BRIDGE_DIR ?? join(tmpdir(), "aseprite-mcp-bridge");
+  }
+
+  public bridgeStatePath(): string {
+    return join(this.bridgeDir(), "state.json");
+  }
+
+  public bridgeSnapshotPath(): string {
+    return join(this.bridgeDir(), "active-sprite.aseprite");
+  }
+
+  private async readBridgeState(): Promise<{
+    state: BridgeState | null;
+    statePath: string;
+    modifiedAt: string | null;
+    error?: string;
+  }> {
+    const statePath = this.bridgeStatePath();
+    try {
+      const [text, info] = await Promise.all([
+        readFile(statePath, "utf-8"),
+        stat(statePath),
+      ]);
+      return {
+        state: JSON.parse(text) as BridgeState,
+        statePath,
+        modifiedAt: info.mtime.toISOString(),
+      };
+    } catch (err: unknown) {
+      return {
+        state: null,
+        statePath,
+        modifiedAt: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private activeSpriteFileFromState(state: BridgeState | null): {
+    filePath: string | null;
+    source: "saved" | "snapshot" | null;
+  } {
+    const filePath = state?.sprite?.filePath;
+    if (filePath && existsSync(filePath)) {
+      return { filePath, source: "saved" };
+    }
+
+    const snapshotPath = state?.sprite?.snapshotPath ?? state?.bridge?.snapshotFile ?? this.bridgeSnapshotPath();
+    if (snapshotPath && existsSync(snapshotPath)) {
+      return { filePath: snapshotPath, source: "snapshot" };
+    }
+
+    return { filePath: null, source: null };
   }
 
   // ---- Tool definitions ---------------------------------------------------
@@ -959,6 +1036,51 @@ end
       },
 
       // ---- Utility ----
+      {
+        name: "get_bridge_status",
+        description: "Read the Codex Aseprite extension bridge status file, if the extension has written one",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "get_active_sprite_context",
+        description: "Read the active sprite, layer, frame, and snapshot context written by the Codex Aseprite extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "get_active_sprite_info",
+        description: "Get full MCP sprite metadata for the saved or snapshotted sprite currently reported by the extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "save_active_sprite_copy",
+        description: "Save a copy of the active saved/snapshotted sprite reported by the extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            savePath: { type: "string", description: "Destination path. Defaults to active-sprite-copy.aseprite in the bridge folder" },
+          },
+        },
+      },
+      {
+        name: "run_script_on_active_sprite",
+        description: "Execute Lua with the saved or snapshotted active sprite from the extension opened first",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            script: { type: "string", description: "Lua script code to execute" },
+          },
+          required: ["script"],
+        },
+      },
       {
         name: "run_script",
         description: "Execute an arbitrary Lua script in Aseprite (for advanced operations)",
@@ -2435,6 +2557,111 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   // -- Utility --
 
+  private async handleGetBridgeStatus(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+
+    return this.ok({
+      bridgeDir: this.bridgeDir(),
+      statePath: bridge.statePath,
+      snapshotPath: this.bridgeSnapshotPath(),
+      connected: bridge.state !== null,
+      modifiedAt: bridge.modifiedAt,
+      activeSpriteFile: resolved.filePath,
+      activeSpriteSource: resolved.source,
+      state: bridge.state,
+      error: bridge.error,
+    });
+  }
+
+  private async handleGetActiveSpriteContext(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    if (!bridge.state) {
+      return this.error(
+        `Aseprite extension bridge state was not found at ${bridge.statePath}`,
+        [
+          "Install and enable the Aseprite Codex Bridge extension",
+          "Use Sprite > Codex MCP > Refresh Context in Aseprite",
+          "Set ASEPRITE_MCP_BRIDGE_DIR to the same folder for Aseprite and this MCP server",
+        ],
+      );
+    }
+
+    return this.ok({
+      bridgeDir: this.bridgeDir(),
+      statePath: bridge.statePath,
+      modifiedAt: bridge.modifiedAt,
+      state: bridge.state,
+    });
+  }
+
+  private async handleGetActiveSpriteInfo(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        [
+          "Save the active sprite in Aseprite, or",
+          "Use Sprite > Codex MCP > Save Active Snapshot in Aseprite",
+        ],
+      );
+    }
+
+    const result = await this.handleGetSpriteInfo({ filePath: resolved.filePath });
+    if (result.isError) return result;
+
+    return this.ok({
+      source: resolved.source,
+      filePath: resolved.filePath,
+      bridgeGeneratedAt: bridge.state?.generatedAt ?? null,
+      spriteInfo: JSON.parse(result.content[0].text),
+    });
+  }
+
+  private async handleSaveActiveSpriteCopy(args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        ["Use Sprite > Codex MCP > Save Active Snapshot in Aseprite"],
+      );
+    }
+
+    const savePath = this.optParam(args, "savePath") ?? join(this.bridgeDir(), "active-sprite-copy.aseprite");
+    const result = await this.handleSaveSprite({
+      filePath: resolved.filePath,
+      savePath,
+    });
+    if (result.isError) return result;
+
+    return this.ok({
+      source: resolved.source,
+      sourcePath: resolved.filePath,
+      savedTo: savePath,
+    });
+  }
+
+  private async handleRunScriptOnActiveSprite(args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        ["Use Sprite > Codex MCP > Save Active Snapshot in Aseprite"],
+      );
+    }
+
+    const script = this.requireParam(args, "script");
+    const result = await this.runLuaScript(script, resolved.filePath);
+    return this.ok({
+      source: resolved.source,
+      filePath: resolved.filePath,
+      result: result.data ?? result,
+    });
+  }
+
   private async handleRunScript(args: Record<string, unknown>): Promise<ToolResult> {
     const filePath = this.optParam(args, "filePath");
     const script = this.requireParam(args, "script");
@@ -2500,6 +2727,11 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
     this.toolHandlers.set("export_layers", (a) => this.handleExportLayers(a));
     this.toolHandlers.set("create_slice", (a) => this.handleCreateSlice(a));
     this.toolHandlers.set("remove_slice", (a) => this.handleRemoveSlice(a));
+    this.toolHandlers.set("get_bridge_status", (a) => this.handleGetBridgeStatus(a));
+    this.toolHandlers.set("get_active_sprite_context", (a) => this.handleGetActiveSpriteContext(a));
+    this.toolHandlers.set("get_active_sprite_info", (a) => this.handleGetActiveSpriteInfo(a));
+    this.toolHandlers.set("save_active_sprite_copy", (a) => this.handleSaveActiveSpriteCopy(a));
+    this.toolHandlers.set("run_script_on_active_sprite", (a) => this.handleRunScriptOnActiveSprite(a));
     this.toolHandlers.set("run_script", (a) => this.handleRunScript(a));
     this.toolHandlers.set("get_aseprite_version", (a) => this.handleGetAsepriteVersion(a));
 

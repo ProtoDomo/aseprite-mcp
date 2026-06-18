@@ -329,9 +329,9 @@ describe("AsepriteMcpServer", () => {
   // -- Tool definitions --
 
   describe("toolDefinitions", () => {
-    it("returns exactly 43 tools", () => {
+    it("returns exactly 48 tools", () => {
       const tools = server.toolDefinitions();
-      expect(tools).toHaveLength(43);
+      expect(tools).toHaveLength(48);
     });
 
     it("each tool has name, description, and inputSchema", () => {
@@ -436,6 +436,11 @@ describe("AsepriteMcpServer", () => {
       expect(names).toContain("remove_slice");
 
       // Utility
+      expect(names).toContain("get_bridge_status");
+      expect(names).toContain("get_active_sprite_context");
+      expect(names).toContain("get_active_sprite_info");
+      expect(names).toContain("save_active_sprite_copy");
+      expect(names).toContain("run_script_on_active_sprite");
       expect(names).toContain("run_script");
       expect(names).toContain("get_aseprite_version");
     });
@@ -574,6 +579,21 @@ describe("AsepriteMcpServer", () => {
       const schema = tool.inputSchema as { required: string[] };
       expect(schema.required).toContain("filePath");
       expect(schema.required).toContain("color");
+    });
+
+    it("run_script_on_active_sprite requires script only", () => {
+      const tools = server.toolDefinitions();
+      const tool = tools.find((t) => t.name === "run_script_on_active_sprite")!;
+      const schema = tool.inputSchema as { required: string[] };
+      expect(schema.required).toEqual(["script"]);
+    });
+  });
+
+  describe("bridge paths", () => {
+    it("uses the default bridge state and snapshot filenames", () => {
+      expect(server.bridgeDir()).toContain("aseprite-mcp-bridge");
+      expect(server.bridgeStatePath()).toContain("state.json");
+      expect(server.bridgeSnapshotPath()).toContain("active-sprite.aseprite");
     });
   });
 });

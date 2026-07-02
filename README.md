@@ -10,7 +10,8 @@ An [MCP](https://modelcontextprotocol.io/) server for [Aseprite](https://www.ase
 
 ## Features
 
-- **43 tools** across 11 categories
+- **48 tools** across 12 categories
+- Optional Aseprite extension bridge for active-sprite Codex workflows
 - Native drawing with configurable brush thickness via `app.useTool()`
 - Pixel-perfect algorithms (Bresenham line, midpoint circle) for thin strokes
 - Cross-platform — Windows, macOS, Linux
@@ -31,6 +32,7 @@ An [MCP](https://modelcontextprotocol.io/) server for [Aseprite](https://www.ase
 | **Cels** | 3 | `move_cel`, `set_cel_opacity`, `clear_cel` |
 | **Export** | 3 | `export_sprite_sheet`, `export_frame`, `export_layers` |
 | **Slices** | 2 | `create_slice`, `remove_slice` |
+| **Bridge** | 5 | `get_bridge_status`, `get_active_sprite_context`, `get_active_sprite_info`, `save_active_sprite_copy`, `run_script_on_active_sprite` |
 | **Utility** | 2 | `run_script`, `get_aseprite_version` |
 
 > 📖 Full parameter reference: **[docs/API.md](docs/API.md)**
@@ -126,6 +128,7 @@ cd aseprite-mcp && npm install && npm run build
 | Variable | Description |
 |----------|-------------|
 | `ASEPRITE_PATH` | Path to Aseprite executable. Auto-detected if not set. |
+| `ASEPRITE_MCP_BRIDGE_DIR` | Optional shared folder for the Aseprite Codex Bridge extension state. |
 | `DEBUG` | Set `"true"` for verbose stderr logging. |
 
 Auto-detection searches standard install paths on all platforms, plus system PATH.
@@ -160,6 +163,23 @@ graph LR
 
 All operations run **headless** — no GUI window is opened.
 
+### Aseprite Codex Bridge Extension
+
+For smoother editor-native Codex workflows, package and install the optional extension:
+
+```powershell
+.\scripts\package-extension.ps1
+```
+
+Install `dist\aseprite-codex-bridge.aseprite-extension` from Aseprite via
+`Edit > Preferences > Extensions > Add Extension`. The extension adds
+`Sprite > Codex MCP` commands that write active sprite, layer, frame, and
+snapshot context to the bridge folder. The MCP bridge tools can then operate on
+the active saved or snapshotted Aseprite document without repeatedly passing
+file paths.
+
+See [docs/ASEPRITE_EXTENSION.md](docs/ASEPRITE_EXTENSION.md).
+
 ---
 
 ## Docker
@@ -185,11 +205,13 @@ docker compose up
 ## Development
 
 ```bash
+npm run verify      # Run tests, build, production audit, and package the extension
 npm run build       # Compile TypeScript
 npm run watch       # Recompile on changes
-npm test            # Run 74 unit tests (vitest)
+npm test            # Run 78 source unit tests (vitest)
 npm run test:watch  # Watch mode
 npm run inspector   # MCP Inspector for interactive testing
+npm run package:extension  # Package the optional Aseprite extension
 ```
 
 ---

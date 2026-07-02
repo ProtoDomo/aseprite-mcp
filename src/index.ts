@@ -8,9 +8,9 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { randomUUID } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,27 @@ interface ToolResult {
 }
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
+
+interface BridgeState {
+  schemaVersion?: number;
+  generatedAt?: string;
+  reason?: string;
+  bridge?: {
+    dir?: string;
+    stateFile?: string;
+    snapshotFile?: string;
+  };
+  extension?: Record<string, unknown>;
+  aseprite?: Record<string, unknown>;
+  sprite?: {
+    exists?: boolean;
+    filePath?: string;
+    snapshotPath?: string;
+    [key: string]: unknown;
+  };
+  active?: Record<string, unknown>;
+  error?: string;
+}
 
 // Escape a string for safe embedding inside Lua double-quoted strings
 export function luaEscape(s: string): string {
@@ -304,6 +325,326 @@ end
       return `Color{ r=${c.r ?? 0}, g=${c.g ?? 0}, b=${c.b ?? 0}, a=${c.a ?? 255} }`;
     }
     return "Color{ r=0, g=0, b=0, a=255 }";
+  }
+
+  public bridgeDir(): string {
+    return process.env.ASEPRITE_MCP_BRIDGE_DIR ?? join(tmpdir(), "aseprite-mcp-bridge");
+  }
+
+  public bridgeStatePath(): string {
+    return join(this.bridgeDir(), "state.json");
+  }
+
+  public bridgeSnapshotPath(): string {
+    return join(this.bridgeDir(), "active-sprite.aseprite");
+  }
+
+  private async readBridgeState(): Promise<{
+    state: BridgeState | null;
+    statePath: string;
+    modifiedAt: string | null;
+    error?: string;
+  }> {
+    const statePath = this.bridgeStatePath();
+    try {
+      const [text, info] = await Promise.all([
+        readFile(statePath, "utf-8"),
+        stat(statePath),
+      ]);
+      return {
+        state: JSON.parse(text) as BridgeState,
+        statePath,
+        modifiedAt: info.mtime.toISOString(),
+      };
+    } catch (err: unknown) {
+      return {
+        state: null,
+        statePath,
+        modifiedAt: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  private activeSpriteFileFromState(state: BridgeState | null): {
+    filePath: string | null;
+    source: "saved" | "snapshot" | null;
+  } {
+    const filePath = state?.sprite?.filePath;
+    if (filePath && existsSync(filePath)) {
+      return { filePath, source: "saved" };
+    }
+
+    const snapshotPath = state?.sprite?.snapshotPath ?? state?.bridge?.snapshotFile ?? this.bridgeSnapshotPath();
+    if (snapshotPath && existsSync(snapshotPath)) {
+      return { filePath: snapshotPath, source: "snapshot" };
+    }
+
+    return { filePath: null, source: null };
+  }
+
+  private async resolveSpriteFile(args: Record<string, unknown>): Promise<{
+    filePath: string;
+    source: "argument" | "saved" | "snapshot";
+    bridgeGeneratedAt?: string | null;
+  }> {
+    const filePath = this.optParam(args, "filePath");
+    if (filePath) {
+      if (!existsSync(filePath)) {
+        throw new Error(`Sprite file does not exist: ${filePath}`);
+      }
+      return { filePath, source: "argument" };
+    }
+
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath || !resolved.source) {
+      throw new Error(
+        "Missing filePath and no active saved/snapshotted sprite is available from the Aseprite bridge",
+      );
+    }
+
+    return {
+      filePath: resolved.filePath,
+      source: resolved.source,
+      bridgeGeneratedAt: bridge.state?.generatedAt ?? null,
+    };
+  }
+
+  private async getSpriteReviewSummary(filePath: string): Promise<Record<string, unknown>> {
+    const script = `
+local spr = app.open("${luaPath(filePath)}")
+if not spr then
+  io.write("__RESULT__" .. json.encode({ success = false, error = "Failed to open sprite" }))
+  return
+end
+local tags = {}
+for _, tag in ipairs(spr.tags) do
+  table.insert(tags, {
+    name = tag.name,
+    fromFrame = tag.fromFrame.frameNumber,
+    toFrame = tag.toFrame.frameNumber,
+    aniDir = tostring(tag.aniDir),
+    repeats = tag.repeats
+  })
+end
+local layers = {}
+for i, layer in ipairs(spr.layers) do
+  table.insert(layers, {
+    index = i,
+    name = layer.name,
+    isGroup = layer.isGroup,
+    isVisible = layer.isVisible,
+    opacity = layer.opacity
+  })
+end
+io.write("__RESULT__" .. json.encode({ success = true, data = {
+  width = spr.width,
+  height = spr.height,
+  frameCount = #spr.frames,
+  layerCount = #spr.layers,
+  tagCount = #spr.tags,
+  tags = tags,
+  layers = layers
+} }))
+`;
+    const result = await this.runLuaScript(script);
+    if (!result.success) {
+      throw new Error(result.error ?? "Failed to read sprite review summary");
+    }
+    return (result.data ?? {}) as Record<string, unknown>;
+  }
+
+  private async compareTemplateLayersData(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const filePath = this.requireParam(args, "filePath");
+    const baseLayerName = this.requireParam(args, "baseLayerName");
+    const finalLayerName = this.requireParam(args, "finalLayerName");
+    const allowedExpansionPx = this.numParam(args, "allowedExpansionPx", 0)!;
+    const centerTolerancePx = this.numParam(args, "centerTolerancePx", 1)!;
+    const contactTolerancePx = this.numParam(args, "contactTolerancePx", 0)!;
+
+    const script = `
+local spr = app.open("${luaPath(filePath)}")
+if not spr then
+  io.write("__RESULT__" .. json.encode({ success = false, error = "Failed to open sprite" }))
+  return
+end
+${this.findLayerLua("baseLayer", baseLayerName)}
+${this.findLayerLua("finalLayer", finalLayerName)}
+
+local allowedExpansionPx = ${allowedExpansionPx}
+local centerTolerancePx = ${centerTolerancePx}
+local contactTolerancePx = ${contactTolerancePx}
+
+local function key(x, y)
+  return tostring(x) .. "," .. tostring(y)
+end
+
+local function scan(layer, frame)
+  local cel = layer:cel(frame)
+  if not cel then
+    return {
+      missing = true,
+      count = 0,
+      pixels = {},
+      bbox = nil,
+      center = nil
+    }
+  end
+
+  local img = cel.image
+  local pixels = {}
+  local minx, miny, maxx, maxy = 999999, 999999, -999999, -999999
+  local count = 0
+  for y = 0, img.height - 1 do
+    for x = 0, img.width - 1 do
+      local px = img:getPixel(x, y)
+      if app.pixelColor.rgbaA(px) > 0 then
+        local sx = cel.position.x + x
+        local sy = cel.position.y + y
+        pixels[key(sx, sy)] = true
+        count = count + 1
+        if sx < minx then minx = sx end
+        if sy < miny then miny = sy end
+        if sx > maxx then maxx = sx end
+        if sy > maxy then maxy = sy end
+      end
+    end
+  end
+
+  if count == 0 then
+    return {
+      missing = false,
+      count = 0,
+      pixels = pixels,
+      bbox = nil,
+      center = nil
+    }
+  end
+
+  return {
+    missing = false,
+    count = count,
+    pixels = pixels,
+    bbox = { minX = minx, minY = miny, maxX = maxx, maxY = maxy },
+    center = { x = (minx + maxx) / 2, y = (miny + maxy) / 2 }
+  }
+end
+
+local function pixel_diff(a, b)
+  local count = 0
+  for k, _ in pairs(a) do
+    if not b[k] then count = count + 1 end
+  end
+  return count
+end
+
+local function overlap_count(a, b)
+  local count = 0
+  for k, _ in pairs(a) do
+    if b[k] then count = count + 1 end
+  end
+  return count
+end
+
+local frames = {}
+local summary = {
+  frameCount = #spr.frames,
+  missingBaseCels = 0,
+  missingFinalCels = 0,
+  emptyBaseFrames = 0,
+  emptyFinalFrames = 0,
+  edgeTouchFrames = 0,
+  framesExceedingAllowedExpansion = 0,
+  framesExceedingCenterTolerance = 0,
+  framesExceedingContactTolerance = 0,
+  totalFinalOnlyPixels = 0,
+  totalBaseOnlyPixels = 0
+}
+
+for i, frame in ipairs(spr.frames) do
+  local base = scan(baseLayer, frame)
+  local final = scan(finalLayer, frame)
+  if base.missing then summary.missingBaseCels = summary.missingBaseCels + 1 end
+  if final.missing then summary.missingFinalCels = summary.missingFinalCels + 1 end
+  if (not base.missing) and base.count == 0 then summary.emptyBaseFrames = summary.emptyBaseFrames + 1 end
+  if (not final.missing) and final.count == 0 then summary.emptyFinalFrames = summary.emptyFinalFrames + 1 end
+
+  local frameResult = {
+    frameNumber = i,
+    baseMissing = base.missing,
+    finalMissing = final.missing,
+    basePixelCount = base.count,
+    finalPixelCount = final.count,
+    baseBbox = base.bbox,
+    finalBbox = final.bbox
+  }
+
+  if base.bbox and final.bbox then
+    local expandLeft = math.max(0, base.bbox.minX - final.bbox.minX)
+    local expandRight = math.max(0, final.bbox.maxX - base.bbox.maxX)
+    local expandTop = math.max(0, base.bbox.minY - final.bbox.minY)
+    local expandBottom = math.max(0, final.bbox.maxY - base.bbox.maxY)
+    local maxExpansion = math.max(expandLeft, expandRight, expandTop, expandBottom)
+    local centerDriftX = final.center.x - base.center.x
+    local centerDriftY = final.center.y - base.center.y
+    local contactDriftY = final.bbox.maxY - base.bbox.maxY
+    local finalOnly = pixel_diff(final.pixels, base.pixels)
+    local baseOnly = pixel_diff(base.pixels, final.pixels)
+    local overlap = overlap_count(base.pixels, final.pixels)
+    local edgeTouch = final.bbox.minX <= 0 or final.bbox.minY <= 0 or final.bbox.maxX >= spr.width - 1 or final.bbox.maxY >= spr.height - 1
+    local expansionOk = maxExpansion <= allowedExpansionPx
+    local centerOk = math.abs(centerDriftX) <= centerTolerancePx and math.abs(centerDriftY) <= centerTolerancePx
+    local contactOk = math.abs(contactDriftY) <= contactTolerancePx
+
+    frameResult.expansion = {
+      left = expandLeft,
+      right = expandRight,
+      top = expandTop,
+      bottom = expandBottom,
+      max = maxExpansion,
+      withinAllowance = expansionOk
+    }
+    frameResult.centerDrift = {
+      x = centerDriftX,
+      y = centerDriftY,
+      withinTolerance = centerOk
+    }
+    frameResult.contactBottomDriftY = contactDriftY
+    frameResult.contactWithinTolerance = contactOk
+    frameResult.finalOnlyPixels = finalOnly
+    frameResult.baseOnlyPixels = baseOnly
+    frameResult.overlapPixels = overlap
+    frameResult.edgeTouch = edgeTouch
+
+    summary.totalFinalOnlyPixels = summary.totalFinalOnlyPixels + finalOnly
+    summary.totalBaseOnlyPixels = summary.totalBaseOnlyPixels + baseOnly
+    if edgeTouch then summary.edgeTouchFrames = summary.edgeTouchFrames + 1 end
+    if not expansionOk then summary.framesExceedingAllowedExpansion = summary.framesExceedingAllowedExpansion + 1 end
+    if not centerOk then summary.framesExceedingCenterTolerance = summary.framesExceedingCenterTolerance + 1 end
+    if not contactOk then summary.framesExceedingContactTolerance = summary.framesExceedingContactTolerance + 1 end
+  end
+
+  table.insert(frames, frameResult)
+end
+
+io.write("__RESULT__" .. json.encode({ success = true, data = {
+  filePath = "${luaPath(filePath)}",
+  baseLayerName = "${luaEscape(baseLayerName)}",
+  finalLayerName = "${luaEscape(finalLayerName)}",
+  allowedExpansionPx = allowedExpansionPx,
+  centerTolerancePx = centerTolerancePx,
+  contactTolerancePx = contactTolerancePx,
+  summary = summary,
+  frames = frames
+} }))
+`;
+
+    const result = await this.runLuaScript(script);
+    if (!result.success) {
+      throw new Error(result.error ?? "Failed to compare template layers");
+    }
+    return (result.data ?? {}) as Record<string, unknown>;
   }
 
   // ---- Tool definitions ---------------------------------------------------
@@ -923,6 +1264,44 @@ end
           required: ["filePath", "outputPattern"],
         },
       },
+      {
+        name: "export_review_pack",
+        description: "Export a review pack for visual audit: 1x sheet, upscaled sheet, grid sheet, GIF, JSON metadata, and optional template comparison",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            filePath: { type: "string", description: "Source sprite file. If omitted, resolves the active saved/snapshotted sprite from the bridge." },
+            outputDir: { type: "string", description: "Directory for generated review files. Defaults to the sprite directory." },
+            baseName: { type: "string", description: "Output filename prefix. Defaults to '<sprite-name>-review'." },
+            scale: { type: "number", description: "Integer preview scale (default: 8)" },
+            columns: { type: "number", description: "Sheet columns. Defaults to tag count when it evenly divides frame count, otherwise sqrt frame count." },
+            layer: { type: "string", description: "Export only this layer" },
+            includeGif: { type: "boolean", description: "Export upscaled GIF preview (default: true)" },
+            includeGrid: { type: "boolean", description: "Export an upscaled sheet with red frame guide grid (default: true)" },
+            baseLayerName: { type: "string", description: "Template/base layer for optional comparison" },
+            finalLayerName: { type: "string", description: "Final/skin layer for optional comparison" },
+            allowedExpansionPx: { type: "number", description: "Allowed per-side silhouette expansion for optional comparison (default: 0)" },
+            centerTolerancePx: { type: "number", description: "Allowed bbox-center drift for optional comparison (default: 1)" },
+            contactTolerancePx: { type: "number", description: "Allowed bottom/contact drift for optional comparison (default: 0)" },
+          },
+        },
+      },
+      {
+        name: "compare_template_layers",
+        description: "Compare a template/base layer against a final/skin layer and report registration drift, contact drift, silhouette expansion, and pixel overlap",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            filePath: { type: "string", description: "Sprite file" },
+            baseLayerName: { type: "string", description: "Template/base layer name" },
+            finalLayerName: { type: "string", description: "Final/skin layer name" },
+            allowedExpansionPx: { type: "number", description: "Allowed per-side silhouette expansion before reporting a frame as over allowance (default: 0)" },
+            centerTolerancePx: { type: "number", description: "Allowed bbox-center drift before reporting a frame as over tolerance (default: 1)" },
+            contactTolerancePx: { type: "number", description: "Allowed bottom/contact drift before reporting a frame as over tolerance (default: 0)" },
+          },
+          required: ["filePath", "baseLayerName", "finalLayerName"],
+        },
+      },
 
       // ---- Slices ----
       {
@@ -959,6 +1338,51 @@ end
       },
 
       // ---- Utility ----
+      {
+        name: "get_bridge_status",
+        description: "Read the Codex Aseprite extension bridge status file, if the extension has written one",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "get_active_sprite_context",
+        description: "Read the active sprite, layer, frame, and snapshot context written by the Codex Aseprite extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "get_active_sprite_info",
+        description: "Get full MCP sprite metadata for the saved or snapshotted sprite currently reported by the extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {},
+        },
+      },
+      {
+        name: "save_active_sprite_copy",
+        description: "Save a copy of the active saved/snapshotted sprite reported by the extension",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            savePath: { type: "string", description: "Destination path. Defaults to active-sprite-copy.aseprite in the bridge folder" },
+          },
+        },
+      },
+      {
+        name: "run_script_on_active_sprite",
+        description: "Execute Lua with the saved or snapshotted active sprite from the extension opened first",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            script: { type: "string", description: "Lua script code to execute" },
+          },
+          required: ["script"],
+        },
+      },
       {
         name: "run_script",
         description: "Execute an arbitrary Lua script in Aseprite (for advanced operations)",
@@ -2366,6 +2790,177 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { cleared = true, 
     }
   }
 
+  private async handleExportReviewPack(args: Record<string, unknown>): Promise<ToolResult> {
+    try {
+      const resolved = await this.resolveSpriteFile(args);
+      const filePath = resolved.filePath;
+      const summary = await this.getSpriteReviewSummary(filePath);
+      const spritePath = parse(filePath);
+      const outputDir = this.optParam(args, "outputDir") ?? dirname(filePath);
+      const baseName = this.optParam(args, "baseName") ?? `${spritePath.name}-review`;
+      const scale = this.numParam(args, "scale", 8)!;
+      const includeGif = this.boolParam(args, "includeGif", true);
+      const includeGrid = this.boolParam(args, "includeGrid", true);
+      const layer = this.optParam(args, "layer");
+      const frameCount = Number(summary.frameCount ?? 1);
+      const tagCount = Number(summary.tagCount ?? 0);
+      const columns =
+        this.numParam(args, "columns") ??
+        (tagCount > 0 && frameCount % tagCount === 0
+          ? tagCount
+          : Math.max(1, Math.ceil(Math.sqrt(frameCount))));
+      if (!Number.isInteger(scale) || scale < 1) {
+        throw new Error("scale must be a positive integer");
+      }
+      if (!Number.isInteger(columns) || columns < 1) {
+        throw new Error("columns must be a positive integer");
+      }
+      const rows = Math.max(1, Math.ceil(frameCount / columns));
+
+      await mkdir(outputDir, { recursive: true });
+
+      const sheet1x = join(outputDir, `${baseName}-1x.png`);
+      const dataFile = join(outputDir, `${baseName}.json`);
+      const sheetScaled = join(outputDir, `${baseName}-${scale}x.png`);
+      const sheetGrid = join(outputDir, `${baseName}-${scale}x-grid.png`);
+      const gifPath = join(outputDir, `${baseName}-${scale}x.gif`);
+      const reviewIndexPath = join(outputDir, `${baseName}-review-pack.json`);
+      const comparisonPath = join(outputDir, `${baseName}-comparison.json`);
+
+      const baseSheetArgs = ["-b", filePath];
+      if (layer) baseSheetArgs.push("--layer", layer);
+      baseSheetArgs.push(
+        "--sheet",
+        sheet1x,
+        "--data",
+        dataFile,
+        "--format",
+        "json-array",
+        "--sheet-type",
+        "rows",
+        "--sheet-columns",
+        String(columns),
+      );
+      await this.runCliCommand(baseSheetArgs);
+
+      const scaledSheetArgs = ["-b", filePath, "--scale", String(scale)];
+      if (layer) scaledSheetArgs.push("--layer", layer);
+      scaledSheetArgs.push(
+        "--sheet",
+        sheetScaled,
+        "--sheet-type",
+        "rows",
+        "--sheet-columns",
+        String(columns),
+      );
+      await this.runCliCommand(scaledSheetArgs);
+
+      let gridOutput: string | null = null;
+      if (includeGrid) {
+        const cellWidth = Number(summary.width ?? 0) * scale;
+        const cellHeight = Number(summary.height ?? 0) * scale;
+        const gridScript = `
+local spr = app.open("${luaPath(sheetScaled)}")
+if not spr then
+  io.write("__RESULT__" .. json.encode({ success = false, error = "Failed to open upscaled sheet" }))
+  return
+end
+local layer = spr.layers[1]
+local cel = layer and layer:cel(1)
+if not cel then
+  io.write("__RESULT__" .. json.encode({ success = false, error = "Upscaled sheet has no drawable cel" }))
+  return
+end
+local img = cel.image
+local pos = cel.position
+local color = Color{ r=255, g=0, b=0, a=255 }
+local cellWidth = ${cellWidth}
+local cellHeight = ${cellHeight}
+app.transaction(function()
+  for x = 0, spr.width - 1, cellWidth do
+    for y = 0, spr.height - 1 do
+      img:drawPixel(x - pos.x, y - pos.y, color)
+    end
+  end
+  for y = 0, spr.height - 1, cellHeight do
+    for x = 0, spr.width - 1 do
+      img:drawPixel(x - pos.x, y - pos.y, color)
+    end
+  end
+end)
+spr:saveCopyAs("${luaPath(sheetGrid)}")
+io.write("__RESULT__" .. json.encode({ success = true, data = { output = "${luaPath(sheetGrid)}" } }))
+`;
+        const gridResult = await this.runLuaScript(gridScript);
+        if (!gridResult.success) {
+          throw new Error(gridResult.error ?? "Failed to write review grid");
+        }
+        gridOutput = sheetGrid;
+      }
+
+      let gifOutput: string | null = null;
+      if (includeGif) {
+        const gifArgs = ["-b", filePath, "--scale", String(scale)];
+        if (layer) gifArgs.push("--layer", layer);
+        gifArgs.push("--save-as", gifPath);
+        await this.runCliCommand(gifArgs);
+        gifOutput = gifPath;
+      }
+
+      let comparison: Record<string, unknown> | null = null;
+      const baseLayerName = this.optParam(args, "baseLayerName");
+      const finalLayerName = this.optParam(args, "finalLayerName");
+      if (baseLayerName && finalLayerName) {
+        comparison = await this.compareTemplateLayersData({
+          filePath,
+          baseLayerName,
+          finalLayerName,
+          allowedExpansionPx: this.numParam(args, "allowedExpansionPx", 0),
+          centerTolerancePx: this.numParam(args, "centerTolerancePx", 1),
+          contactTolerancePx: this.numParam(args, "contactTolerancePx", 0),
+        });
+        await writeFile(comparisonPath, JSON.stringify(comparison, null, 2), "utf-8");
+      }
+
+      const reviewPack = {
+        source: resolved,
+        generatedAt: new Date().toISOString(),
+        sprite: summary,
+        layout: {
+          scale,
+          columns,
+          rows,
+          layer: layer ?? null,
+        },
+        outputs: {
+          sheet1x,
+          sheetScaled,
+          sheetGrid: gridOutput,
+          gif: gifOutput,
+          dataFile,
+          comparison: comparison ? comparisonPath : null,
+          reviewIndex: reviewIndexPath,
+        },
+        comparisonSummary: comparison
+          ? (comparison.summary as Record<string, unknown> | undefined)
+          : null,
+      };
+
+      await writeFile(reviewIndexPath, JSON.stringify(reviewPack, null, 2), "utf-8");
+      return this.ok(reviewPack);
+    } catch (err: unknown) {
+      return this.error(`Review pack export failed: ${(err as Error).message}`);
+    }
+  }
+
+  private async handleCompareTemplateLayers(args: Record<string, unknown>): Promise<ToolResult> {
+    try {
+      return this.ok(await this.compareTemplateLayersData(args));
+    } catch (err: unknown) {
+      return this.error(`Template comparison failed: ${(err as Error).message}`);
+    }
+  }
+
   // -- Slices --
 
   private async handleCreateSlice(args: Record<string, unknown>): Promise<ToolResult> {
@@ -2435,6 +3030,111 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   // -- Utility --
 
+  private async handleGetBridgeStatus(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+
+    return this.ok({
+      bridgeDir: this.bridgeDir(),
+      statePath: bridge.statePath,
+      snapshotPath: this.bridgeSnapshotPath(),
+      connected: bridge.state !== null,
+      modifiedAt: bridge.modifiedAt,
+      activeSpriteFile: resolved.filePath,
+      activeSpriteSource: resolved.source,
+      state: bridge.state,
+      error: bridge.error,
+    });
+  }
+
+  private async handleGetActiveSpriteContext(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    if (!bridge.state) {
+      return this.error(
+        `Aseprite extension bridge state was not found at ${bridge.statePath}`,
+        [
+          "Install and enable the Aseprite Codex Bridge extension",
+          "Use Sprite > Codex MCP > Refresh Context in Aseprite",
+          "Set ASEPRITE_MCP_BRIDGE_DIR to the same folder for Aseprite and this MCP server",
+        ],
+      );
+    }
+
+    return this.ok({
+      bridgeDir: this.bridgeDir(),
+      statePath: bridge.statePath,
+      modifiedAt: bridge.modifiedAt,
+      state: bridge.state,
+    });
+  }
+
+  private async handleGetActiveSpriteInfo(_args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        [
+          "Save the active sprite in Aseprite, or",
+          "Use Sprite > Codex MCP > Save Active Snapshot in Aseprite",
+        ],
+      );
+    }
+
+    const result = await this.handleGetSpriteInfo({ filePath: resolved.filePath });
+    if (result.isError) return result;
+
+    return this.ok({
+      source: resolved.source,
+      filePath: resolved.filePath,
+      bridgeGeneratedAt: bridge.state?.generatedAt ?? null,
+      spriteInfo: JSON.parse(result.content[0].text),
+    });
+  }
+
+  private async handleSaveActiveSpriteCopy(args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        ["Use Sprite > Codex MCP > Save Active Snapshot in Aseprite"],
+      );
+    }
+
+    const savePath = this.optParam(args, "savePath") ?? join(this.bridgeDir(), "active-sprite-copy.aseprite");
+    const result = await this.handleSaveSprite({
+      filePath: resolved.filePath,
+      savePath,
+    });
+    if (result.isError) return result;
+
+    return this.ok({
+      source: resolved.source,
+      sourcePath: resolved.filePath,
+      savedTo: savePath,
+    });
+  }
+
+  private async handleRunScriptOnActiveSprite(args: Record<string, unknown>): Promise<ToolResult> {
+    const bridge = await this.readBridgeState();
+    const resolved = this.activeSpriteFileFromState(bridge.state);
+    if (!resolved.filePath) {
+      return this.error(
+        "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
+        ["Use Sprite > Codex MCP > Save Active Snapshot in Aseprite"],
+      );
+    }
+
+    const script = this.requireParam(args, "script");
+    const result = await this.runLuaScript(script, resolved.filePath);
+    return this.ok({
+      source: resolved.source,
+      filePath: resolved.filePath,
+      result: result.data ?? result,
+    });
+  }
+
   private async handleRunScript(args: Record<string, unknown>): Promise<ToolResult> {
     const filePath = this.optParam(args, "filePath");
     const script = this.requireParam(args, "script");
@@ -2498,8 +3198,15 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
     this.toolHandlers.set("export_sprite_sheet", (a) => this.handleExportSpriteSheet(a));
     this.toolHandlers.set("export_frame", (a) => this.handleExportFrame(a));
     this.toolHandlers.set("export_layers", (a) => this.handleExportLayers(a));
+    this.toolHandlers.set("export_review_pack", (a) => this.handleExportReviewPack(a));
+    this.toolHandlers.set("compare_template_layers", (a) => this.handleCompareTemplateLayers(a));
     this.toolHandlers.set("create_slice", (a) => this.handleCreateSlice(a));
     this.toolHandlers.set("remove_slice", (a) => this.handleRemoveSlice(a));
+    this.toolHandlers.set("get_bridge_status", (a) => this.handleGetBridgeStatus(a));
+    this.toolHandlers.set("get_active_sprite_context", (a) => this.handleGetActiveSpriteContext(a));
+    this.toolHandlers.set("get_active_sprite_info", (a) => this.handleGetActiveSpriteInfo(a));
+    this.toolHandlers.set("save_active_sprite_copy", (a) => this.handleSaveActiveSpriteCopy(a));
+    this.toolHandlers.set("run_script_on_active_sprite", (a) => this.handleRunScriptOnActiveSprite(a));
     this.toolHandlers.set("run_script", (a) => this.handleRunScript(a));
     this.toolHandlers.set("get_aseprite_version", (a) => this.handleGetAsepriteVersion(a));
 

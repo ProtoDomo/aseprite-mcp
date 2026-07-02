@@ -20,8 +20,10 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run src",
+    "test:watch": "vitest src",
+    "package:extension": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/package-extension.ps1",
+    "verify": "npm test && npm run build && npm audit --omit=dev && npm run package:extension",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js"
   },
   "dependencies": {

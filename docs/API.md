@@ -468,6 +468,53 @@ Export each layer as a separate image file.
 | `outputPattern` | string | ✅ | Output path with `{layer}` placeholder (e.g. `"output-{layer}.png"`) |
 | `frameNumber` | number | | Export this frame only (1-indexed) |
 
+#### `export_review_pack`
+Export a visual-review bundle for sprite work. The bundle includes a 1x sheet,
+an upscaled sheet, optional red-grid upscaled sheet, optional GIF, Aseprite JSON
+sheet metadata, a review-pack index JSON file, and optional template comparison
+JSON when `baseLayerName` and `finalLayerName` are supplied.
+
+If `filePath` is omitted, the tool resolves the active saved or snapshotted
+sprite from the Aseprite Codex Bridge.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filePath` | string | | Source sprite file. Defaults to active bridge sprite/snapshot. |
+| `outputDir` | string | | Output directory. Defaults to the sprite directory. |
+| `baseName` | string | | Output filename prefix. Defaults to `<sprite-name>-review`. |
+| `scale` | number | | Integer preview scale (default: `8`). |
+| `columns` | number | | Sheet columns. Defaults to tag count when it evenly divides frame count, otherwise `ceil(sqrt(frameCount))`. |
+| `layer` | string | | Export only this layer. |
+| `includeGif` | boolean | | Export upscaled GIF (default: `true`). |
+| `includeGrid` | boolean | | Export upscaled sheet with red frame guide grid (default: `true`). |
+| `baseLayerName` | string | | Template/base layer for optional comparison. |
+| `finalLayerName` | string | | Final/skin layer for optional comparison. |
+| `allowedExpansionPx` | number | | Allowed per-side silhouette expansion for comparison (default: `0`). |
+| `centerTolerancePx` | number | | Allowed bbox-center drift for comparison (default: `1`). |
+| `contactTolerancePx` | number | | Allowed bottom/contact drift for comparison (default: `0`). |
+
+**Returns:** output paths, sheet layout, sprite metadata, bridge source, and
+optional comparison summary.
+
+#### `compare_template_layers`
+Compare a template/base layer against a final/skin layer across every frame.
+This reports registration drift separately from allowed silhouette additions so
+template-guided skins can add readable ears, tails, shields, weapons, capes, or
+other identity features without forcing exact base silhouette matching.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filePath` | string | ✅ | Sprite file |
+| `baseLayerName` | string | ✅ | Template/base layer name |
+| `finalLayerName` | string | ✅ | Final/skin layer name |
+| `allowedExpansionPx` | number | | Allowed per-side silhouette expansion before reporting a frame as over allowance (default: `0`). |
+| `centerTolerancePx` | number | | Allowed bbox-center drift before reporting a frame as over tolerance (default: `1`). |
+| `contactTolerancePx` | number | | Allowed bottom/contact drift before reporting a frame as over tolerance (default: `0`). |
+
+**Returns:** per-frame bbox, expansion, center drift, bottom/contact drift,
+edge-touch flag, overlap pixels, template-only pixels, final-only pixels, and
+summary counts for frames over each tolerance.
+
 ---
 
 ## Slices
@@ -495,6 +542,57 @@ Slices define named rectangular regions within a sprite (9-slice scaling, UI ext
 | `filePath` | string | ✅ | Sprite file |
 | `sliceName` | string | ✅ | Slice name to remove |
 | `savePath` | string | | Path to save |
+
+---
+
+## Aseprite Codex Bridge
+
+These tools use the optional Aseprite Codex Bridge extension. The extension writes
+active editor context to a shared `state.json` file and can save an
+`active-sprite.aseprite` snapshot in the same bridge folder.
+
+Set `ASEPRITE_MCP_BRIDGE_DIR` for both Aseprite and the MCP server if you want
+to override the default `<system temp>/aseprite-mcp-bridge` folder.
+
+#### `get_bridge_status`
+Read the bridge status file if it exists.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+**Returns:** bridge directory, state path, snapshot path, active sprite file if available, and the raw bridge state.
+
+#### `get_active_sprite_context`
+Read the active sprite, active layer, active frame, selection, and snapshot context written by the extension.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+#### `get_active_sprite_info`
+Resolve the active saved sprite or snapshot from the bridge state, then return full `get_sprite_info` metadata for that file.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| none | | | |
+
+#### `save_active_sprite_copy`
+Save a copy of the active saved sprite or snapshot reported by the bridge.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `savePath` | string | | Destination path. Defaults to `active-sprite-copy.aseprite` in the bridge folder. |
+
+#### `run_script_on_active_sprite`
+Execute Lua with the active saved sprite or snapshot opened first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `script` | string | ✅ | Lua script code to execute |
+
+The script controls whether changes are saved. Use `app.activeSprite:saveCopyAs(...)`
+inside the script for generated outputs.
 
 ---
 

@@ -2,7 +2,7 @@
   "name": "aseprite-codex-bridge",
   "displayName": "Aseprite Codex Bridge",
   "description": "Shares active Aseprite editor context with the Codex Aseprite MCP server.",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "author": {
     "name": "Metafold Games"
   },

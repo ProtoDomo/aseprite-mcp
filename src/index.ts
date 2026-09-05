@@ -34,6 +34,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
 
 interface BridgeState {
   schemaVersion?: number;
+  sessionId?: string;
   generatedAt?: string;
   reason?: string;
   bridge?: {
@@ -343,6 +344,8 @@ end
     state: BridgeState | null;
     statePath: string;
     modifiedAt: string | null;
+    connected: boolean;
+    connectionReason: string;
     error?: string;
   }> {
     const statePath = this.bridgeStatePath();
@@ -351,16 +354,33 @@ end
         readFile(statePath, "utf-8"),
         stat(statePath),
       ]);
+      const state = JSON.parse(text) as BridgeState;
+      let connected = false;
+      let connectionReason = "heartbeat-missing-or-invalid";
+      if (state.reason === "extension-exit") {
+        connectionReason = "extension-exited";
+      } else if (state.sessionId) {
+        try {
+          const heartbeat = JSON.parse(await readFile(join(this.bridgeDir(), "heartbeat.json"), "utf-8"));
+          const ageMs = Date.now() - Date.parse(heartbeat.generatedAt);
+          connected = heartbeat.sessionId === state.sessionId && Number.isFinite(ageMs) && ageMs >= -5000 && ageMs <= 10000;
+          connectionReason = connected ? "fresh-heartbeat" : "stale-or-mismatched-heartbeat";
+        } catch { /* An existing state file alone is not proof of a live editor. */ }
+      }
       return {
-        state: JSON.parse(text) as BridgeState,
+        state,
         statePath,
         modifiedAt: info.mtime.toISOString(),
+        connected,
+        connectionReason,
       };
     } catch (err: unknown) {
       return {
         state: null,
         statePath,
         modifiedAt: null,
+        connected: false,
+        connectionReason: "state-unavailable",
         error: err instanceof Error ? err.message : String(err),
       };
     }
@@ -370,13 +390,18 @@ end
     filePath: string | null;
     source: "saved" | "snapshot" | null;
   } {
+    if (!state?.sprite?.exists || state.reason === "extension-exit") {
+      return { filePath: null, source: null };
+    }
     const filePath = state?.sprite?.filePath;
-    if (filePath && existsSync(filePath)) {
+    if (!state.sprite.isModified && filePath && existsSync(filePath)) {
       return { filePath, source: "saved" };
     }
 
-    const snapshotPath = state?.sprite?.snapshotPath ?? state?.bridge?.snapshotFile ?? this.bridgeSnapshotPath();
-    if (snapshotPath && existsSync(snapshotPath)) {
+    // Only a snapshot explicitly attached to this context may represent unsaved edits.
+    // Never fall back to the shared snapshot left behind by another document.
+    const snapshotPath = state.sprite.snapshotPath;
+    if (snapshotPath && state.sprite.snapshotSavedAt && !state.sprite.snapshotError && existsSync(snapshotPath)) {
       return { filePath: snapshotPath, source: "snapshot" };
     }
 
@@ -397,7 +422,7 @@ end
     }
 
     const bridge = await this.readBridgeState();
-    const resolved = this.activeSpriteFileFromState(bridge.state);
+    const resolved = this.activeSpriteFileFromState(bridge.connected ? bridge.state : null);
     if (!resolved.filePath || !resolved.source) {
       throw new Error(
         "Missing filePath and no active saved/snapshotted sprite is available from the Aseprite bridge",
@@ -3032,13 +3057,15 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   private async handleGetBridgeStatus(_args: Record<string, unknown>): Promise<ToolResult> {
     const bridge = await this.readBridgeState();
-    const resolved = this.activeSpriteFileFromState(bridge.state);
+    const resolved = this.activeSpriteFileFromState(bridge.connected ? bridge.state : null);
 
     return this.ok({
       bridgeDir: this.bridgeDir(),
       statePath: bridge.statePath,
       snapshotPath: this.bridgeSnapshotPath(),
-      connected: bridge.state !== null,
+      connected: bridge.connected,
+      stateAvailable: bridge.state !== null,
+      connectionReason: bridge.connectionReason,
       modifiedAt: bridge.modifiedAt,
       activeSpriteFile: resolved.filePath,
       activeSpriteSource: resolved.source,
@@ -3049,9 +3076,9 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   private async handleGetActiveSpriteContext(_args: Record<string, unknown>): Promise<ToolResult> {
     const bridge = await this.readBridgeState();
-    if (!bridge.state) {
+    if (!bridge.connected) {
       return this.error(
-        `Aseprite extension bridge state was not found at ${bridge.statePath}`,
+        `Aseprite editor bridge is unavailable (${bridge.connectionReason}) at ${bridge.statePath}`,
         [
           "Install and enable the Aseprite Codex Bridge extension",
           "Use Sprite > Codex MCP > Refresh Context in Aseprite",
@@ -3070,7 +3097,7 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   private async handleGetActiveSpriteInfo(_args: Record<string, unknown>): Promise<ToolResult> {
     const bridge = await this.readBridgeState();
-    const resolved = this.activeSpriteFileFromState(bridge.state);
+    const resolved = this.activeSpriteFileFromState(bridge.connected ? bridge.state : null);
     if (!resolved.filePath) {
       return this.error(
         "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
@@ -3094,7 +3121,7 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   private async handleSaveActiveSpriteCopy(args: Record<string, unknown>): Promise<ToolResult> {
     const bridge = await this.readBridgeState();
-    const resolved = this.activeSpriteFileFromState(bridge.state);
+    const resolved = this.activeSpriteFileFromState(bridge.connected ? bridge.state : null);
     if (!resolved.filePath) {
       return this.error(
         "No saved or snapshotted active sprite is available from the Aseprite extension bridge",
@@ -3118,7 +3145,7 @@ io.write("__RESULT__" .. json.encode({ success = true, data = { removed = "${lua
 
   private async handleRunScriptOnActiveSprite(args: Record<string, unknown>): Promise<ToolResult> {
     const bridge = await this.readBridgeState();
-    const resolved = this.activeSpriteFileFromState(bridge.state);
+    const resolved = this.activeSpriteFileFromState(bridge.connected ? bridge.state : null);
     if (!resolved.filePath) {
       return this.error(
         "No saved or snapshotted active sprite is available from the Aseprite extension bridge",

@@ -555,13 +555,19 @@ Set `ASEPRITE_MCP_BRIDGE_DIR` for both Aseprite and the MCP server if you want
 to override the default `<system temp>/aseprite-mcp-bridge` folder.
 
 #### `get_bridge_status`
-Read the bridge status file if it exists.
+Read bridge context and verify the extension's session heartbeat.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | none | | | |
 
 **Returns:** bridge directory, state path, snapshot path, active sprite file if available, and the raw bridge state.
+
+`connected` requires extension 0.1.5, a matching heartbeat within ten seconds, and
+no `extension-exit` context. `stateAvailable` distinguishes historical context from
+a live editor; `connectionReason` explains the result. Other active-context tools
+reject a disconnected bridge. Modified saved sprites require an explicit current
+snapshot rather than silently using older saved pixels.
 
 #### `get_active_sprite_context`
 Read the active sprite, active layer, active frame, selection, and snapshot context written by the extension.
@@ -585,7 +591,9 @@ Save a copy of the active saved sprite or snapshot reported by the bridge.
 | `savePath` | string | | Destination path. Defaults to `active-sprite-copy.aseprite` in the bridge folder. |
 
 #### `run_script_on_active_sprite`
-Execute Lua with the active saved sprite or snapshot opened first.
+Execute Lua in a separate batch process with the active saved sprite or snapshot opened first.
+This does not execute in the visible editor tab. See the [bridge request protocol](ASEPRITE_EXTENSION.md#bridge-requests)
+for capturing unsaved editor pixels and refreshing the visible file after external edits.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

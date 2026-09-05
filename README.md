@@ -10,7 +10,7 @@ An [MCP](https://modelcontextprotocol.io/) server for [Aseprite](https://www.ase
 
 ## Features
 
-- **48 tools** across 12 categories
+- **50 tools** across 12 categories
 - Optional Aseprite extension bridge for active-sprite Codex workflows
 - Native drawing with configurable brush thickness via `app.useTool()`
 - Pixel-perfect algorithms (Bresenham line, midpoint circle) for thin strokes
@@ -32,7 +32,7 @@ An [MCP](https://modelcontextprotocol.io/) server for [Aseprite](https://www.ase
 | **Cels** | 3 | `move_cel`, `set_cel_opacity`, `clear_cel` |
 | **Export** | 3 | `export_sprite_sheet`, `export_frame`, `export_layers` |
 | **Slices** | 2 | `create_slice`, `remove_slice` |
-| **Bridge** | 5 | `get_bridge_status`, `get_active_sprite_context`, `get_active_sprite_info`, `save_active_sprite_copy`, `run_script_on_active_sprite` |
+| **Bridge / review** | 7 | `get_bridge_status`, `get_active_sprite_context`, `get_active_sprite_info`, `save_active_sprite_copy`, `run_script_on_active_sprite`, `export_review_pack`, `compare_template_layers` |
 | **Utility** | 2 | `run_script`, `get_aseprite_version` |
 
 > 📖 Full parameter reference: **[docs/API.md](docs/API.md)**
@@ -161,7 +161,8 @@ graph LR
     D --> E
 ```
 
-All operations run **headless** — no GUI window is opened.
+File operations run **headless**. Active-context tools additionally require the
+interactive extension and a fresh session heartbeat. Batch Lua does not mutate the visible tab.
 
 ### Aseprite Codex Bridge Extension
 
